@@ -1,0 +1,23 @@
+#include "kernel/types.h"
+#include "user/user.h"
+
+int
+main(int argc, char *argv[])
+{
+  if(argc != 2){ // user must pass exactly 1 argument
+    printf("Usage: sleep <ticks>\n");
+    exit(1);
+  }
+
+  int ticks = atoi(argv[1]); // convert argument string → int
+
+  if(ticks < 0){
+    printf("sleep: ticks must be non-negative\n");
+    exit(1);
+  }
+
+  sleep(ticks);  // call system call
+
+  exit(0); // exit normally
+}
+
