@@ -2,7 +2,7 @@
 #include "user/user.h"
 
 int main(void) {
-  printf("%d\n", uptime());  // uptime() returns ticks since boot
+  printf("%d\n", uptime());  
   exit(0);
 }
 

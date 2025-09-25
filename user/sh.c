@@ -3,6 +3,8 @@
 #include "kernel/types.h"
 #include "user/user.h"
 #include "kernel/fcntl.h"
+#include "kernel/fs.h" 
+ 
 
 // Parsed command representation
 #define EXEC  1
@@ -13,6 +15,10 @@
 
 #define MAXARGS 10
 
+
+#define MAXHIST 20
+char *history[MAXHIST];
+int hist_count = 0;
 struct cmd {
   int type;
 };
@@ -131,16 +137,68 @@ runcmd(struct cmd *cmd)
   exit(0);
 }
 
+void list_matching_files(char *prefix) {
+    int fd;
+    struct dirent de;   // from kernel/fs.h
+
+    if ((fd = open(".", O_RDONLY)) < 0) {
+        printf("cannot open current directory\n");
+        return;
+    }
+
+    printf("\n");
+    while (read(fd, &de, sizeof(de)) == sizeof(de)) {
+        if (de.inum == 0) continue;  // skip empty entries
+
+        // simple prefix match
+        int match = 1;
+        for (int i = 0; prefix[i]; i++) {
+            if (prefix[i] != de.name[i]) {
+                match = 0;
+                break;
+            }
+        }
+
+        if (match)
+            printf("%s  ", de.name);
+    }
+    printf("\n");
+    close(fd);
+}
+
+
 int
 getcmd(char *buf, int nbuf)
 {
-  write(2, "$ ", 2);
+  
   memset(buf, 0, nbuf);
   gets(buf, nbuf);
   if(buf[0] == 0) // EOF
     return -1;
+
+ for(int i=0; buf[i]; i++){
+        if(buf[i] == '\t'){
+            buf[i] = 0; 
+            list_matching_files(buf); 
+            buf[0] = 0; 
+            break;
+        }
+    }
   return 0;
 }
+
+
+char* strdup(const char *s)
+{
+    int len = 0;
+    while(s[len]) len++;       
+    char *p = malloc(len+1);   
+    if(!p) return 0;
+    for(int i=0; i<=len; i++)  
+        p[i] = s[i];
+    return p;
+}
+
 
 int
 main(void)
@@ -161,10 +219,34 @@ main(void)
     char *cmd = buf;
     while (*cmd == ' ' || *cmd == '\t')
       cmd++;
-    if (*cmd == '\n') // is a blank command
+
+    if (*cmd == '\n') // blank command
       continue;
+
+    if(hist_count < MAXHIST)
+        history[hist_count++] = strdup(buf);
+    else {
+        free(history[0]);
+        for(int i=1; i<MAXHIST; i++)
+            history[i-1] = history[i];
+        history[MAXHIST-1] = strdup(buf);
+    }
+
+    if(strcmp(cmd, "history\n") == 0){
+        for(int i=0; i<hist_count; i++)
+            printf("%d %s", i+1, history[i]);
+        continue;  // skip fork for built-in
+    }
+
+
+    // --- NEW WAIT BUILTIN ---
+    if(strcmp(cmd, "wait\n") == 0){
+        while(wait(0) > 0);  // wait for all child processes
+        continue;
+    }
+
     if(cmd[0] == 'c' && cmd[1] == 'd' && cmd[2] == ' '){
-      // Chdir must be called by the parent, not the child.
+      // Chdir must be called by the parent
       cmd[strlen(cmd)-1] = 0;  // chop \n
       if(chdir(cmd+3) < 0)
         fprintf(2, "cannot cd %s\n", cmd+3);
@@ -173,7 +255,7 @@ main(void)
         runcmd(parsecmd(cmd));
       wait(0);
     }
-  }
+}
   exit(0);
 }
 
