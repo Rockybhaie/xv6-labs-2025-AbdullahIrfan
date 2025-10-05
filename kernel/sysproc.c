@@ -7,6 +7,27 @@
 #include "proc.h"
 #include "vm.h"
 
+
+uint64
+sys_interpose(void)
+{
+    int mask;
+    char path[MAXPATH];
+    struct proc *p = myproc();
+
+    // Step 2a: Get the mask argument
+    argint(0, &mask);
+
+    // Step 2b: Get the allowed pathname argument (second argument)
+    argstr(1, path, MAXPATH);
+
+    // Step 2c: Store in proc struct
+    p->syscall_mask = mask;
+    safestrcpy(p->allowed_path, path, MAXPATH);
+
+    return 0;
+}
+
 uint64
 sys_exit(void)
 {
@@ -105,3 +126,8 @@ sys_uptime(void)
   release(&tickslock);
   return xticks;
 }
+
+
+
+
+
