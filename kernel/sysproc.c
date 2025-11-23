@@ -6,6 +6,7 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "vm.h"
+// #include "printf.c"
 
 uint64
 sys_exit(void)
@@ -81,6 +82,38 @@ sys_pause(void)
     sleep(&ticks, &tickslock);
   }
   release(&tickslock);
+  backtrace(); // ADDED BY SAFEGUARD TASK 2
+  return 0;
+}
+
+/* ADDED BY SAFEGUARD */
+uint64 sys_sleep(void) {
+  int duration;
+  uint start_ticks;
+
+  argint(0, &duration);
+  if (duration < 0)
+    duration = 0;
+
+  acquire(&tickslock);
+  start_ticks = ticks;
+
+  for (;;) {
+    if (ticks - start_ticks >= duration)
+      break;
+
+    struct proc *p = myproc();
+    if (killed(p)) {
+      release(&tickslock);
+      return -1;
+    }
+    sleep(&ticks, &tickslock);
+  }
+
+  printf("Calling backtrace from sys_sleep\n");
+  backtrace();
+
+  release(&tickslock);
   return 0;
 }
 
@@ -104,4 +137,53 @@ sys_uptime(void)
   xticks = ticks;
   release(&tickslock);
   return xticks;
+}
+
+/* ADDED BY SAFEGUARD */
+uint64 sys_sigalarm(void) {
+  uint64 fn_ptr;
+  int time_gap;
+
+  argint(0, &time_gap);
+  argaddr(1, &fn_ptr);
+
+  struct proc *p = myproc();
+
+  if (time_gap == 0) {
+    if (p->alarm_trapframe) {
+      kfree(p->alarm_trapframe);
+      p->alarm_trapframe = 0;
+    }
+    p->alarm_interval = 0;
+    p->alarm_handler  = 0;
+    p->alarm_ticks    = 0;
+    p->alarm_enabled  = 0;
+    return 0;
+  }
+
+  if (time_gap < 0)
+    return -1;
+
+  p->alarm_interval = time_gap;
+  p->alarm_handler  = (void(*)())fn_ptr;
+  p->alarm_ticks    = time_gap;
+  p->alarm_enabled  = 1;
+
+  return 0;
+}
+
+/* ADDED BY SAFEGUARD */
+uint64 sys_sigreturn(void) {
+  struct proc *proc_ptr = myproc();
+
+  if (proc_ptr->alarm_trapframe == 0)
+    return -1;
+  *(proc_ptr->trapframe) = *(proc_ptr->alarm_trapframe);
+
+  kfree(proc_ptr->alarm_trapframe);
+  proc_ptr->alarm_enabled = 1;
+  proc_ptr->alarm_ticks   = proc_ptr->alarm_interval;
+  proc_ptr->alarm_trapframe = 0;
+
+  return proc_ptr->trapframe->a0;
 }

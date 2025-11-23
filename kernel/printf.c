@@ -133,12 +133,39 @@ printf(char *fmt, ...)
   return 0;
 }
 
+// ADDED BY SAFEGUARD
+void
+backtrace(void)
+{
+  printf("backtrace:\n");
+
+  uint64 fp = r_fp();
+  uint64 stack_page = PGROUNDDOWN(fp);
+  uint64 stack_top = stack_page + PGSIZE;
+
+  while (fp < stack_top) {
+    // Return address is at fp - 8
+    uint64 ra = *(uint64 *)(fp - 8);
+    printf("%p\n", (void *)ra);
+
+    // Previous frame pointer is at fp - 16
+    uint64 prev_fp = *(uint64 *)(fp - 16);
+
+    // Stop on invalid or non-progressing frame pointers
+    if (prev_fp <= fp || prev_fp >= stack_top)
+      break;
+
+    fp = prev_fp;
+  }
+}
+
 void
 panic(char *s)
 {
   panicking = 1;
   printf("panic: ");
   printf("%s\n", s);
+  backtrace(); // ADDED BY SAFEGUARD
   panicked = 1; // freeze uart output from other CPUs
   for(;;)
     ;

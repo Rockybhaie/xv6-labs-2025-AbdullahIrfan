@@ -136,6 +136,11 @@ int             fetchstr(uint64, char*, int);
 int             fetchaddr(uint64, uint64*);
 void            syscall();
 
+// ADDED BY SAFEGUARD
+uint64          sys_sigalarm(void);
+uint64          sys_sigreturn(void);
+void backtrace(void);
+
 // trap.c
 extern uint     ticks;
 void            trapinit(void);

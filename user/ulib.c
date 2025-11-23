@@ -158,4 +158,3 @@ char *
 sbrklazy(int n) {
   return sys_sbrk(n, SBRK_LAZY);
 }
-

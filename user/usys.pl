@@ -42,3 +42,7 @@ entry("getpid");
 entry("sbrk");
 entry("pause");
 entry("uptime");
+
+# ADDED BY SAFEGUARD
+entry("sigalarm");
+entry("sigreturn");
