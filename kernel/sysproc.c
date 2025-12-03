@@ -107,3 +107,59 @@ sys_uptime(void)
   release(&tickslock);
   return xticks;
 }
+
+uint64
+sys_getprocinfo(void)
+{
+  uint64 addr;
+  struct proc *p = myproc();
+  
+  // Get the user-space pointer
+  argaddr(0, &addr);
+  
+  // Prepare process info structure
+  struct {
+    int pid;
+    int queue_level;
+    int ticks_used;
+    int quantum;
+    int state;
+    char name[16];
+  } info;
+  
+  // Fill in the info
+  info.pid = p->pid;
+  info.queue_level = p->queue_level;
+  info.ticks_used = p->ticks_used;
+  info.quantum = p->quantum;
+  info.state = p->state;
+  memmove(info.name, p->name, 16);
+  
+  // Copy to user space
+  if(copyout(p->pagetable, addr, (char *)&info, sizeof(info)) < 0)
+    return -1;
+  
+  return 0;
+}
+
+uint64
+sys_sleep(void)
+{
+  int n;
+  uint ticks0;
+
+  argint(0, &n);
+  if(n < 0)
+    n = 0;
+  acquire(&tickslock);
+  ticks0 = ticks;
+  while(ticks - ticks0 < n){
+    if(killed(myproc())){
+      release(&tickslock);
+      return -1;
+    }
+    sleep(&ticks, &tickslock);
+  }
+  release(&tickslock);
+  return 0;
+}

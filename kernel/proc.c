@@ -6,6 +6,45 @@
 #include "proc.h"
 #include "defs.h"
 
+
+#define MLFQ_LEVELS 4
+#define BOOST_INTERVAL 200
+
+#define MLFQ_DEBUG 1           // Master debug flag
+#define MLFQ_VERBOSE_TICKS 0   // 0 = summary only, 1 = all ticks
+
+
+// Queue structure for MLFQ
+struct mlfq_queue {
+  struct proc *head;           // First process in queue
+  struct proc *tail;           // Last process in queue
+};
+
+// The 4 priority queues
+static struct mlfq_queue mlfq[MLFQ_LEVELS];
+
+// Global boost counter
+uint boost_counter = 0;
+
+// Time quantum for each level
+static int time_quanta[MLFQ_LEVELS] = {4, 8, 16, 32};
+
+extern char initcode[];
+extern uint initcode_sz;
+
+// functon declarations
+int get_quantum(int level);
+void mlfq_enqueue(struct proc *p, int level);
+struct proc* mlfq_dequeue(int level);
+void mlfq_remove(struct proc *p);
+struct proc* mlfq_next(void);
+void mlfq_demote(struct proc *p);
+void mlfq_boost(void);
+
+
+
+
+
 struct cpu cpus[NCPU];
 
 struct proc proc[NPROC];
@@ -56,6 +95,14 @@ procinit(void)
       p->state = UNUSED;
       p->kstack = KSTACK((int) (p - proc));
   }
+
+  // ===== Initialize MLFQ Queues =====
+  for(int i = 0; i < MLFQ_LEVELS; i++) {
+    mlfq[i].head = 0;
+    mlfq[i].tail = 0;
+  }
+  printf("MLFQ queues initialized\n");  // ADD DEBUG
+  // ==================================
 }
 
 // Must be called with interrupts disabled,
@@ -140,6 +187,16 @@ found:
     return 0;
   }
 
+  //Initialize MLFQ Fields
+  p->queue_level = 0;           // Start at highest priority
+  p->ticks_used = 0;            // No ticks used yet
+  p->quantum = time_quanta[0];  // Get quantum for level 0 (4 ticks)
+  p->next_proc = 0;             // Not in any queue yet
+  
+
+  
+  
+
   // Set up new context to start executing at forkret,
   // which returns to user space.
   memset(&p->context, 0, sizeof(p->context));
@@ -216,18 +273,21 @@ proc_freepagetable(pagetable_t pagetable, uint64 sz)
 }
 
 // Set up first user process.
+// Set up first user process.
 void
 userinit(void)
 {
   struct proc *p;
-
   p = allocproc();
   initproc = p;
   
   p->cwd = namei("/");
-
   p->state = RUNNABLE;
-
+  
+  // ===== ADD THIS LINE =====
+  mlfq_enqueue(p, 0);
+  // =========================
+  
   release(&p->lock);
 }
 
@@ -300,6 +360,8 @@ kfork(void)
 
   acquire(&np->lock);
   np->state = RUNNABLE;
+  // Add new process to highest priority queue
+  mlfq_enqueue(np, 0);
   release(&np->lock);
 
   return pid;
@@ -414,6 +476,179 @@ kwait(uint64 addr)
   }
 }
 
+
+//MLFQ Helper Functions
+// Get quantum for a given queue level
+int
+get_quantum(int level)
+{
+  if(level < 0 || level >= MLFQ_LEVELS)
+    return time_quanta[MLFQ_LEVELS - 1];
+  return time_quanta[level];
+}
+
+
+// Add process to end of queue at given level
+void
+mlfq_enqueue(struct proc *p, int level)
+{
+  if(level < 0 || level >= MLFQ_LEVELS)
+    return;
+  
+  p->next_proc = 0;  // This will be the last process
+  
+  if(mlfq[level].tail) {
+    // Queue not empty, add to end
+    mlfq[level].tail->next_proc = p;
+    mlfq[level].tail = p;
+  } else {
+    // Queue empty, this is first process
+    mlfq[level].head = p;
+    mlfq[level].tail = p;
+  }
+}
+
+// Remove and return first process from queue at given level
+struct proc*
+mlfq_dequeue(int level)
+{
+  if(level < 0 || level >= MLFQ_LEVELS)
+    return 0;
+  
+  struct proc *p = mlfq[level].head;
+  if(p) {
+    mlfq[level].head = p->next_proc;
+    if(mlfq[level].head == 0) {
+      // Queue now empty
+      mlfq[level].tail = 0;
+    }
+    p->next_proc = 0;
+  }
+  return p;
+}
+
+
+// Remove a specific process from its queue
+void
+mlfq_remove(struct proc *p)
+{
+  int level = p->queue_level;
+  if(level < 0 || level >= MLFQ_LEVELS)
+    return;
+  
+  struct proc *curr = mlfq[level].head;
+  struct proc *prev = 0;
+  
+  // Find the process in the queue
+  while(curr) {
+    if(curr == p) {
+      // Found it
+      if(prev) {
+        prev->next_proc = curr->next_proc;
+      } else {
+        // Removing head
+        mlfq[level].head = curr->next_proc;
+      }
+      
+      // Update tail if necessary
+      if(mlfq[level].tail == p) {
+        mlfq[level].tail = prev;
+      }
+      
+      p->next_proc = 0;
+      return;
+    }
+    prev = curr;
+    curr = curr->next_proc;
+  }
+}
+
+
+// Get next runnable process from highest priority queue
+struct proc*
+mlfq_next(void)
+{
+  struct proc *p;
+  
+  // Try each level from highest to lowest
+  for(int level = 0; level < MLFQ_LEVELS; level++) {
+    p = mlfq_dequeue(level);
+    if(p) {
+      return p;
+    }
+  }
+  
+  return 0;  // No runnable process
+}
+
+
+// Demote process to next lower level
+void
+mlfq_demote(struct proc *p)
+{
+  if(p->queue_level < MLFQ_LEVELS - 1) {
+    p->queue_level++;
+    p->quantum = get_quantum(p->queue_level);
+  }
+  p->ticks_used = 0;  // Reset tick counter
+}
+
+
+// Boost all processes to highest priority
+// Boost all processes to highest priority
+void
+mlfq_boost(void)
+{
+  struct proc *p;
+  
+  // Go through all processes
+  for(p = proc; p < &proc[NPROC]; p++) {
+    acquire(&p->lock);
+    
+    if(p->state == RUNNABLE || p->state == RUNNING) {
+      // Remove from current queue if RUNNABLE
+      if(p->state == RUNNABLE) {
+        mlfq_remove(p);
+      }
+      
+      // Reset to highest priority
+      p->queue_level = 0;
+      p->ticks_used = 0;
+      p->quantum = get_quantum(0);
+      
+      // Re-enqueue if RUNNABLE
+      if(p->state == RUNNABLE) {
+        mlfq_enqueue(p, 0);
+      }
+    }
+    
+    release(&p->lock);
+  }
+}
+
+
+// Debug function to print MLFQ state
+void
+mlfq_print_queues(void)
+{
+  printf("=== MLFQ Queue State ===\n");
+  for(int level = 0; level < MLFQ_LEVELS; level++) {
+    printf("Queue %d (quantum=%d): ", level, time_quanta[level]);
+    
+    struct proc *p = mlfq[level].head;
+    if(p == 0) {
+      printf("empty\n");
+    } else {
+      while(p != 0) {
+        printf("%s(%d) ", p->name, p->pid);
+        p = p->next_proc;
+      }
+      printf("\n");
+    }
+  }
+  printf("======================\n");
+}
+
 // Per-CPU process scheduler.
 // Each CPU calls scheduler() after setting itself up.
 // Scheduler never returns.  It loops, doing:
@@ -421,43 +656,38 @@ kwait(uint64 addr)
 //  - swtch to start running that process.
 //  - eventually that process transfers control
 //    via swtch back to the scheduler.
+
+
+//new scheduler implementation
 void
 scheduler(void)
 {
   struct proc *p;
   struct cpu *c = mycpu();
-
+  
   c->proc = 0;
   for(;;){
-    // The most recent process to run may have had interrupts
-    // turned off; enable them to avoid a deadlock if all
-    // processes are waiting. Then turn them back off
-    // to avoid a possible race between an interrupt
-    // and wfi.
+    // Avoid deadlock by ensuring that devices can interrupt.
     intr_on();
-    intr_off();
 
-    int found = 0;
-    for(p = proc; p < &proc[NPROC]; p++) {
+    // Get next process from highest priority queue
+    p = mlfq_next();
+    
+    if(p != 0) {
+      // Found a runnable process
       acquire(&p->lock);
+      
       if(p->state == RUNNABLE) {
-        // Switch to chosen process.  It is the process's job
-        // to release its lock and then reacquire it
-        // before jumping back to us.
+        // Switch to chosen process
         p->state = RUNNING;
         c->proc = p;
         swtch(&c->context, &p->context);
 
-        // Process is done running for now.
-        // It should have changed its p->state before coming back.
+        // Process is done running for now
         c->proc = 0;
-        found = 1;
       }
+      
       release(&p->lock);
-    }
-    if(found == 0) {
-      // nothing to run; stop running on this core until an interrupt.
-      asm volatile("wfi");
     }
   }
 }
@@ -490,12 +720,34 @@ sched(void)
 }
 
 // Give up the CPU for one scheduling round.
+//updated yield func
+// Give up the CPU for one scheduling round.
 void
 yield(void)
 {
   struct proc *p = myproc();
   acquire(&p->lock);
+  
+  // Check if process used full quantum (demotion needed)
+  if(p->ticks_used >= p->quantum) {
+    #if MLFQ_DEBUG
+    int old_queue = p->queue_level;
+    #endif
+    
+    mlfq_demote(p);
+    
+    #if MLFQ_DEBUG
+    // Only show queue transitions
+    if(old_queue != p->queue_level) {
+      printf("[MLFQ] PID=%d: queue %d → %d (quantum now %d)\n", 
+             p->pid, old_queue, p->queue_level, p->quantum);
+    }
+    #endif
+  }
+  
   p->state = RUNNABLE;
+  mlfq_enqueue(p, p->queue_level);
+  
   sched();
   release(&p->lock);
 }
@@ -558,6 +810,9 @@ sleep(void *chan, struct spinlock *lk)
   p->chan = chan;
   p->state = SLEEPING;
 
+  // Reset ticks but KEEP priority (reward I/O behavior)
+  p->ticks_used = 0;
+
   sched();
 
   // Tidy up.
@@ -579,8 +834,10 @@ wakeup(void *chan)
     if(p != myproc()){
       acquire(&p->lock);
       if(p->state == SLEEPING && p->chan == chan) {
-        p->state = RUNNABLE;
-      }
+      p->state = RUNNABLE;
+      // Re-enqueue at CURRENT priority (no demotion for I/O)
+      mlfq_enqueue(p, p->queue_level);
+    }
       release(&p->lock);
     }
   }
@@ -599,8 +856,9 @@ kkill(int pid)
     if(p->pid == pid){
       p->killed = 1;
       if(p->state == SLEEPING){
-        // Wake process from sleep().
+        // Wake process from sleep if needed.
         p->state = RUNNABLE;
+        mlfq_enqueue(p, p->queue_level);
       }
       release(&p->lock);
       return 0;

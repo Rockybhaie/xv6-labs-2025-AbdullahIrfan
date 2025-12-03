@@ -22,8 +22,23 @@ int chdir(const char*);
 int dup(int);
 int getpid(void);
 char* sys_sbrk(int,int);
-int pause(int);
+int pause(int);      
 int uptime(void);
+int sleep(int);  
+
+struct procinfo {
+  int pid;
+  int queue_level;
+  int ticks_used;
+  int quantum;
+  int state;
+  char name[16];
+};
+
+int getprocinfo(struct procinfo*);
+
+
+
 
 // ulib.c
 int stat(const char*, struct stat*);

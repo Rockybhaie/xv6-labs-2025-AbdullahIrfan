@@ -9,6 +9,10 @@
 struct spinlock tickslock;
 uint ticks;
 
+#define BOOST_INTERVAL 200
+extern uint boost_counter;
+extern void mlfq_boost(void);
+
 extern char trampoline[], uservec[];
 
 // in kernelvec.S, calls kerneltrap().
@@ -44,7 +48,7 @@ usertrap(void)
 
   // send interrupts and exceptions to kerneltrap(),
   // since we're now in the kernel.
-  w_stvec((uint64)kernelvec);  //DOC: kernelvec
+  w_stvec((uint64)kernelvec);
 
   struct proc *p = myproc();
   
@@ -80,9 +84,29 @@ usertrap(void)
   if(killed(p))
     kexit(-1);
 
+  // ========== MODIFIED: MLFQ Timer Interrupt Handling ==========
   // give up the CPU if this is a timer interrupt.
-  if(which_dev == 2)
+  if(which_dev == 2) {
+  // Increment process tick counter
+  p->ticks_used++;
+  
+  // ===== ADD PRIORITY BOOSTING =====
+  // Global boost counter for starvation prevention
+  boost_counter++;
+  
+  // Every BOOST_INTERVAL ticks, boost all processes to queue 0
+  if(boost_counter >= BOOST_INTERVAL) {
+    printf("[BOOST] Boosting all processes to queue 0 (preventing starvation)\n");
+    mlfq_boost();
+    boost_counter = 0;
+  }
+  // =================================
+  
+  // Check if quantum expired
+  if(p->ticks_used >= p->quantum) {
     yield();
+  }
+}
 
   prepare_return();
 
@@ -147,13 +171,24 @@ kerneltrap()
 
   if((which_dev = devintr()) == 0){
     // interrupt or trap from an unknown source
-    printf("scause=0x%lx sepc=0x%lx stval=0x%lx\n", scause, r_sepc(), r_stval());
+    printf("scause=0x%lx sepc=0x%lx stval=0x%lx\n", scause, sepc, r_stval());
     panic("kerneltrap");
   }
 
+  // ========== MODIFIED: MLFQ Timer Interrupt Handling ==========
   // give up the CPU if this is a timer interrupt.
-  if(which_dev == 2 && myproc() != 0)
+  if(which_dev == 2 && myproc() != 0 && myproc()->state == RUNNING) {
+  struct proc *p = myproc();
+  
+  // Increment process tick counter
+  p->ticks_used++;
+  
+  // Check if quantum expired
+  if(p->ticks_used >= p->quantum) {
     yield();
+  }
+}
+  // ==============================================================
 
   // the yield() may have caused some traps to occur,
   // so restore trap registers for use by kernelvec.S's sepc instruction.
@@ -216,4 +251,3 @@ devintr()
     return 0;
   }
 }
-
